@@ -2,6 +2,7 @@ package gormx
 
 import (
 	"database/sql"
+	"log"
 	"net/url"
 	"regexp"
 )
@@ -25,6 +26,7 @@ func DropDB(driverName, connectionUrl string) error {
 	return DropDBWithConUrl(driverName, conUrl, dbName)
 }
 func CreateDBWithConUrl(driverName, connectionUrl, dbName string) error {
+	log.Printf("Create database %s\n", dbName)
 	url.Parse(connectionUrl)
 	db, err := sql.Open(driverName, connectionUrl)
 	if err != nil {
@@ -36,6 +38,7 @@ func CreateDBWithConUrl(driverName, connectionUrl, dbName string) error {
 }
 
 func DropDBWithConUrl(driverName, connectionUrl, dbName string) error {
+	log.Printf("Drop database %s\n", dbName)
 	url.Parse(connectionUrl)
 	db, err := sql.Open(driverName, connectionUrl)
 	if err != nil {
