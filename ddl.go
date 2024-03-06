@@ -182,6 +182,12 @@ func (s *DDL) ParseFKInfo(tag string) FKInfo {
 			r.OnUpdate = FKAction(value)
 		}
 	}
+	if r.OnDelete == "" {
+		r.OnDelete = s.DefaultOnDelete
+	}
+	if r.OnUpdate == "" {
+		r.OnUpdate = s.DefaultOnUpdate
+	}
 	return r
 
 }
