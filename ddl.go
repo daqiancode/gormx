@@ -41,38 +41,21 @@ func (s *DDL) AddTables(tables ...interface{}) {
 		schema.Parse(v, &s.schemas, s.db.NamingStrategy)
 	}
 }
+
 func (s *DDL) Range(f func(structType reflect.Type, tableSchema *schema.Schema) bool) {
 	s.schemas.Range(func(key, value interface{}) bool {
 		return f(key.(reflect.Type), value.(*schema.Schema))
 	})
 }
 
-func (s *DDL) AddFK(table, target interface{}, fk string) {
-	srcSch := s.GetSchema(table)
-	dstSch := s.GetSchema(target)
-	s.AddForeignKey(srcSch.Table, fk, dstSch.Table, dstSch.PrimaryFieldDBNames[0], FKRestrict, FKCascade)
-}
-func (s *DDL) MakeFKName(table, fkey, target, targetCol string) string {
-	return fmt.Sprintf("fk_%s_%s_%s_%s", table, fkey, target, targetCol)
-}
-
-func (s *DDL) AddForeignKey(table, fkey, target, targetCol string, onDelete, onUpdate FKAction) {
-	fkName := s.MakeFKName(table, fkey, target, targetCol)
-	args := []interface{}{table, fkName, fkey, target, targetCol}
-	tpl := "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s)"
-	if onUpdate != FKEmpty {
-		tpl += " ON UPDATE %s"
-		args = append(args, onUpdate)
-	}
-	if onDelete != FKEmpty {
-		tpl += " ON DELETE %s"
-		args = append(args, onDelete)
-	}
-	ddl := fmt.Sprintf(tpl, args...)
-	s.db.Exec(fmt.Sprintf("ALTER TABLE %s DROP FOREIGN KEY %s", table, fkName))
-	tx := s.db.Exec(ddl)
-	log.Println(tx.Error)
-}
+//	func (s *DDL) AddFK(table, target interface{}, fk string) {
+//		srcSch := s.GetSchema(table)
+//		dstSch := s.GetSchema(target)
+//		s.AddForeignKey(srcSch.Table, fk, dstSch.Table, dstSch.PrimaryFieldDBNames[0], FKRestrict, FKCascade)
+//	}
+// func (s *DDL) MakeFKName(table, fkey, target, targetCol string) string {
+// 	return fmt.Sprintf("fk_%s.%s_%s.%s", table, fkey, target, targetCol)
+// }
 
 func (s *DDL) GetTableName(tableStruct interface{}) string {
 	stmt := &gorm.Statement{DB: s.db}
@@ -97,32 +80,32 @@ func (s *DDL) AddFKs(table interface{}) {
 func (s *DDL) MakeFKs() {
 	s.Range(func(structType reflect.Type, src *schema.Schema) bool {
 		for _, f := range src.Fields {
-			// fmt.Println(f.TagSettings)
 			v, ok := f.TagSettings["fk"]
 			if !ok {
 				v, ok = f.TagSettings["FK"]
 			}
 			if ok {
 				fkInfo := s.ParseFKInfo(v)
-				dst := s.GetSchemaByStructName(fkInfo.StructName)
-				if dst == nil {
-					info := fmt.Sprintf("Make fk error. %s.%s can not ref struct %s\n", src.Name, f.Name, fkInfo.StructName)
-					log.Print(info)
-					continue
-					// panic(errors.New(info))
+				dropFKSql := fkInfo.DropFKSql(src.Table, f.DBName)
+				fkSql := fkInfo.FKSql(src.Table, f.DBName)
+				log.Println(dropFKSql)
+				s.db.Exec(dropFKSql)
+				log.Println(fkSql)
+				err := s.db.Exec(fkSql).Error
+				if err != nil {
+					log.Println(err)
 				}
-				if fkInfo.OnDelete == "" {
-					fkInfo.OnDelete = s.DefaultOnDelete
-				}
-				if fkInfo.OnUpdate == "" {
-					fkInfo.OnUpdate = s.DefaultOnUpdate
-				}
-				log.Printf("Make FK: %s.%s -> %s.%s on delete %s on update %s\n", src.Table, f.DBName, dst.Table, dst.PrimaryFieldDBNames[0], fkInfo.OnDelete, fkInfo.OnUpdate)
-				s.AddForeignKey(src.Table, f.DBName, dst.Table, dst.PrimaryFieldDBNames[0], fkInfo.OnDelete, fkInfo.OnUpdate)
 			}
 		}
 		return true
 	})
+}
+
+func (s *DDL) ForeignKeyCheck(enable bool) error {
+	if enable {
+		return s.db.Exec("SET FOREIGN_KEY_CHECKS=1").Error
+	}
+	return s.db.Exec("SET FOREIGN_KEY_CHECKS=0").Error
 }
 
 func (s *DDL) MatchTableName(structType reflect.Type, tableName string) bool {
@@ -146,21 +129,58 @@ func (s *DDL) GetSchema(obj interface{}) *schema.Schema {
 }
 
 type FKInfo struct {
-	StructName string
-	OnDelete   FKAction
-	OnUpdate   FKAction
+	Table    string
+	Field    string
+	OnDelete FKAction
+	OnUpdate FKAction
 }
 
-// tag: eg. fk:User,CASCADE,CASCADE  Table,on delete %s,on update %s
+func (s *FKInfo) FKName(srcTable, srcField string) string {
+	return fmt.Sprintf("fk_%s_%s", srcTable, srcField)
+}
+
+func (s *FKInfo) DropFKSql(srcTable, srcField string) string {
+	return fmt.Sprintf("ALTER TABLE %s DROP FOREIGN KEY %s", srcTable, s.FKName(srcTable, srcField))
+}
+func (s *FKInfo) FKSql(srcTable, srcField string) string {
+	fkName := s.FKName(srcTable, srcField)
+	fkSql := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s)", srcTable, fkName, srcField, s.Table, s.Field)
+	if s.OnDelete != FKEmpty {
+		fkSql += " ON DELETE " + string(s.OnDelete)
+	}
+	if s.OnUpdate != FKEmpty {
+		fkSql += " ON UPDATE " + string(s.OnUpdate)
+	}
+	return fkSql
+}
+
+// tag:
+// eg1. fk:User.Id,ondelete=CASCADE,onupdate=CASCADE  -> ALTER TABLE User ADD CONSTRAINT fkname FOREIGN KEY (id) REFERENCES on delete CASCADE,on update CASCADE
+// eg2. fk:User,ondelete=SET NULL,onupdate=CASCADE  -> ALTER TABLE User ADD CONSTRAINT fkname FOREIGN KEY (id) REFERENCES on delete CASCADE,on update CASCADE
 func (s *DDL) ParseFKInfo(tag string) FKInfo {
 	parts := strings.Split(tag, ",")
 	r := FKInfo{}
-	r.StructName = strings.TrimSpace(parts[0])
-	if len(parts) > 1 {
-		r.OnDelete = FKAction(strings.TrimSpace(parts[1]))
+	structNameAndField := strings.Split(parts[0], ".")
+	r.Table = s.db.NamingStrategy.TableName(structNameAndField[0])
+	if len(structNameAndField) > 1 {
+		r.Field = s.db.NamingStrategy.ColumnName(r.Table, structNameAndField[1])
+	} else {
+		r.Field = s.GetSchemaByStructName(structNameAndField[0]).PrimaryFieldDBNames[0]
 	}
-	if len(parts) > 2 {
-		r.OnUpdate = FKAction(strings.TrimSpace(parts[2]))
+
+	for i := 1; i < len(parts); i++ {
+		kv := strings.Split(parts[i], "=")
+		if len(kv) != 2 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(kv[0]))
+		value := strings.ToUpper(strings.TrimSpace(kv[1]))
+		switch key {
+		case "ondelete":
+			r.OnDelete = FKAction(value)
+		case "onupdate":
+			r.OnUpdate = FKAction(value)
+		}
 	}
 	return r
 

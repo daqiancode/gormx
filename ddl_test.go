@@ -1,6 +1,7 @@
 package gormx_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/daqiancode/gormx"
@@ -18,14 +19,18 @@ type Product struct {
 }
 type UserProduct struct {
 	Id        int64 `gorm:"primaryKey"`
-	Uid       int64 `gorm:"index;fk:User;"`
-	ProductId int64 `gorm:"index;fk:Product"`
+	Uid       int64 `gorm:"index;fk:User,ondelete=SET NULL,onupdate=CASCADE;"`
+	ProductId int64 `gorm:"index;fk:Product.Id"`
 }
 
+// go clean -testcache
 func TestMakeFK(t *testing.T) {
-	conUrl := "root:123456@tcp(localhost:3306)/testing?charset=utf8&parseTime=True&loc=Local"
-	gormx.CreateDB("mysql", conUrl)
-	defer gormx.DropDB("mysql", conUrl)
+	conUrl := "root:123456@tcp(localhost:3306)/gormx_test?charset=utf8&parseTime=True&loc=Local"
+	err := gormx.CreateDB("mysql", conUrl)
+	if err != nil {
+		fmt.Println(err)
+	}
+	// defer gormx.DropDB("mysql", conUrl)
 	db, err := gorm.Open(mysql.New(mysql.Config{
 		DSN: conUrl,
 	}), &gorm.Config{})
